@@ -4,22 +4,66 @@
 #' @param coefs whether or not to include significant path coefficient values in diagram
 #' @param sig significance level for determining what significant paths are
 #' @param stand Should the coefficients being used be standardized coefficients
-buildPaths <- function(fit, coefs = coefs, sig = sig, stand = stand){
+#' @param covs Should model covariances be included in the diagram
+#' @param stars a character vector indicating which parameters should include significance stars be included for regression paths, latent paths, or covariances. Include which of the 3 you want ("regress", "latent", "covs"), default is none.
+#' @importFrom stringr str_replace_all
+buildPaths <- function(fit, coefs = FALSE, sig = 1.00, stand = FALSE, covs = FALSE, stars = NULL){
   if(stand){
     ParTable <- lavaan::standardizedsolution(fit)
+    ParTableAlt <- fit@ParTable
   } else {
     ParTable <- fit@ParTable
+    ParTableAlt <- fit@ParTable
   }
+
+  # get rid of . from variable names
+  ParTable$lhs <- stringr::str_replace_all(fit@ParTable$lhs, pattern = "\\.", replacement = "")
+  ParTable$rhs <- stringr::str_replace_all(fit@ParTable$rhs, pattern = "\\.", replacement = "")
+
   regress <- ParTable$op == "~"
   latent <- ParTable$op == "=~"
-  zval_reg <- ParTable$est[regress] / ParTable$se[regress]
+  cov <- ParTable$op == "~~" & (ParTable$rhs %in% ParTable$lhs[latent | regress]) & (ParTable$rhs != ParTable$lhs)
+
+  zval_reg <- ParTableAlt$est[regress] / ParTableAlt$se[regress]
   pval_reg <- (1 - stats::pnorm(abs(zval_reg))) * 2
   signif_reg <- pval_reg < sig
   coef <- ifelse(signif_reg, round(ParTable$est[regress], digits = 2), "")
+
+  zval_lat <- ParTableAlt$est[latent] / ParTableAlt$se[latent]
+  pval_lat <- (1 - stats::pnorm(abs(zval_lat))) * 2
+  signif_lat <- pval_lat < sig
+  latent_coef <- ifelse(signif_lat, round(ParTable$est[latent], digits = 2), "")
+
+  zval_cov <- ParTableAlt$est[cov] / ParTableAlt$se[cov]
+  pval_cov <- (1 - stats::pnorm(abs(zval_cov))) * 2
+  signif_cov <- pval_cov < sig
+  cov_vals <- ifelse(signif_cov, round(ParTable$est[cov], digits = 2), "")
+
+  if("regress" %in% stars){
+    #pval_reg <- ParTable$pvalue[regress]
+    stars_reg <- unlist(lapply(X = pval_reg, FUN = sig_stars))
+  } else {
+    stars_reg <- ""
+  }
+
+  if("latent" %in% stars){
+    #pval_lat <- ParTable$pvalue[latent]
+    stars_lat <- unlist(lapply(X = pval_lat, FUN = sig_stars))
+  } else {
+    stars_lat <- ""
+  }
+
+  if("covs" %in% stars){
+    #pval_cov <- ParTable$pvalue[cov]
+    stars_cov <- unlist(lapply(X = pval_cov, FUN = sig_stars))
+  } else {
+    stars_cov <- ""
+  }
+
   #penwidths <- ifelse(coefs == "", 1, 2)
   if(any(regress)){
     if(coefs){
-      regress_paths <- paste(paste(ParTable$rhs[regress], ParTable$lhs[regress], sep = "->"), paste("[label = '", coef, "']", sep = ""), collapse = " ")
+      regress_paths <- paste(paste(ParTable$rhs[regress], ParTable$lhs[regress], sep = "->"), paste("[label = '", coef, stars_reg, "']", sep = ""), collapse = " ")
     } else {
       regress_paths <- paste(paste(ParTable$rhs[regress], ParTable$lhs[regress], sep = "->"), collapse = " ")
     }
@@ -27,17 +71,41 @@ buildPaths <- function(fit, coefs = coefs, sig = sig, stand = stand){
   regress_paths <- ""
   }
   if(any(latent)) {
-  latent_paths <- paste(paste(ParTable$rhs[latent], ParTable$lhs[latent], sep = "->"), collapse = " ")
+    if(coefs){
+      latent_paths <- paste(paste(ParTable$lhs[latent], ParTable$rhs[latent], sep = "->"), paste("[label = '", latent_coef, stars_lat, "']", sep = ""), collapse = " ")
+    } else {
+      latent_paths <- paste(paste(ParTable$lhs[latent], ParTable$rhs[latent], sep = "->"), collapse = " ")
+    }
   } else {
   latent_paths <- ""
   }
-  paste(regress_paths, latent_paths, sep = " ")
+  if(any(cov)){
+    if(covs){
+
+      covVals <- round(ParTable$est[cov], digits = 2)
+
+      cov_paths <- paste(
+        paste(
+          ParTable$rhs[cov],
+          ParTable$lhs[cov], sep = " -> "),
+        paste("[label = '", cov_vals, stars_cov, "', dir = 'both']", sep = ""),
+        collapse = " "
+      )
+
+    } else {
+      cov_paths <- ""
+    }
+  } else {
+    cov_paths <- ""
+  }
+  paste(regress_paths, latent_paths, cov_paths, sep = " ")
 }
 
 #' Extracts the paths from the lavaan model.
 #'
 #' @param fit A model fit object of class lavaan.
 getNodes <- function(fit){
+  # remove . from variable names
   regress <- fit@ParTable$op == "~"
   latent <- fit@ParTable$op == "=~"
   observed_nodes <- c()
@@ -52,7 +120,28 @@ getNodes <- function(fit){
   }
   # make sure latent variables don't show up in both
   observed_nodes <- setdiff(observed_nodes, latent_nodes)
+
+  # remove . from variable names
+  observed_nodes <- stringr::str_replace_all(observed_nodes, pattern = "\\.", replacement = "")
+  latent_nodes <- stringr::str_replace_all(latent_nodes, pattern = "\\.", replacement = "")
+
   list(observeds = observed_nodes, latents = latent_nodes)
+}
+
+#' Generates standard significance stars
+#'
+#' @param pvals a vector of p values
+sig_stars <- function(pvals){
+  if(pvals <= 0.001){
+    star = "***"
+  } else if (pvals <= 0.01){
+    star = "**"
+  } else if (pvals <= 0.05){
+    star = "*"
+  } else {
+    star = ""
+  }
+  star
 }
 
 #' Adds variable labels to the Diagrammer plot function call.
@@ -67,15 +156,13 @@ buildLabels <- function(label_list){
 #'
 #' @param name A string of the name of the plot.
 #' @param model A model fit object of class lavaan.
-#' @param labels  An optionalnamed list of variable labels fit object of class lavaan.
+#' @param labels  An optional named list of variable labels fit object of class lavaan.
 #' @param graph_options  A named list of graph options for Diagrammer syntax.
 #' @param node_options  A named list of node options for Diagrammer syntax.
 #' @param edge_options  A named list of edge options for Diagrammer syntax.
-#' @param coefs whether or not to include significant path coefficient values in diagram
-#' @param sig significance level for determining what significant paths are
-#' @param stand Should the coefficients being used be standardized coefficients
+#' @param ... additional arguments to be passed to \code{buildPaths}
 #' @return A string specifying the path diagram for \code{model}
-buildCall <- function(name = "plot", model, labels = NULL, graph_options, node_options, edge_options, coefs = coefs, sig = sig, stand = stand){
+buildCall <- function(name = name, model = model, labels = labels, graph_options = list(overlap = "true", fontsize = "10"), node_options = list(shape = "box"), edge_options = list(color = "black"), ...){
   string <- ""
   string <- paste(string, "digraph", name, "{")
   string <- paste(string, "\n")
@@ -97,7 +184,7 @@ buildCall <- function(name = "plot", model, labels = NULL, graph_options, node_o
   string <- paste(string, "\n")
   string <- paste(string, "edge", "[", paste(paste(names(edge_options), edge_options, sep = " = "), collapse = ", "), "]")
   string <- paste(string, "\n")
-  string <- paste(string, buildPaths(model, coefs = coefs, sig = sig, stand = stand))
+  string <- paste(string, buildPaths(model, ...))
   string <- paste(string, "}", sep = "\n")
   string
 }
@@ -106,18 +193,13 @@ buildCall <- function(name = "plot", model, labels = NULL, graph_options, node_o
 #'
 #' @param name A string of the name of the plot.
 #' @param model A model fit object of class lavaan.
-#' @param labels  An optional named list of variable labels fit object of class lavaan.
-#' @param graph_options  A named list of graph options for Diagrammer syntax, default provided.
-#' @param node_options  A named list of node options for Diagrammer syntax, default provided.
-#' @param edge_options  A named list of edge options for Diagrammer syntax., default provided.
-#' @param coefs whether or not to include significant path coefficient values in diagram
-#' @param sig significance level for determining what significant paths are
-#' @param stand Should the coefficients being used be standardized coefficients
+#' @param labels  An optional named list of variable labels.
+#' @param ... Additional arguments to be called to \code{buildCall} and \code{buildPaths}
 #' @return A Diagrammer plot of the path diagram for \code{model}
-#' @import DiagrammeR
+#' @importFrom DiagrammeR grViz
 #' @export
-lavaanPlot <- function(name = "plot", model, labels = NULL, graph_options = list(overlap = "true", fontsize = "10"), node_options = list(shape = "box"), edge_options = list(color = "black"), coefs = FALSE, sig = 0.05, stand = TRUE){
-  plotCall <- buildCall(name = name, model = model, labels = labels, graph_options = graph_options, node_options = node_options, edge_options = edge_options, coefs = coefs, sig = sig, stand = stand)
+lavaanPlot <- function(name = "plot", model, labels = NULL, ...){
+  plotCall <- buildCall(name = name, model = model, labels = labels, ...)
   grViz(plotCall)
 }
 
